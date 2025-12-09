@@ -84,6 +84,14 @@ export default function App() {
   const [pickerVisible, setPickerVisible] = useState(false);
   const [pickerYear, setPickerYear] = useState(new Date().getFullYear());
 
+  // Grouping State
+  const [expandedCategories, setExpandedCategories] = useState({}); // { 'Income-Salary': true }
+
+  // Category Deletion State
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [categoryToDelete, setCategoryToDelete] = useState(null); // { name: 'Salary', type: 'Income' }
+  const [reassignCategory, setReassignCategory] = useState('');
+
   // --- Persistence ---
   const STORAGE_KEYS = {
     TRANSACTIONS: '@tracker_app_transactions',
@@ -171,6 +179,34 @@ export default function App() {
 
   const totals = getTotals();
 
+  const getGroupedTransactions = () => {
+    const groups = {};
+    filteredTransactions.forEach(t => {
+      const key = `${t.type}-${t.category}`;
+      if (!groups[key]) {
+        groups[key] = {
+          key,
+          category: t.category,
+          type: t.type,
+          total: 0,
+          transactions: []
+        };
+      }
+      groups[key].transactions.push(t);
+      groups[key].total += t.amount;
+    });
+
+    // Sort transactions within groups by date (newest first)
+    // Sort groups by total amount (descending) or keep them by income/expense?
+    // Let's sort groups by type (Income first) then by Total Amount desc
+    return Object.values(groups).sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'Income' ? -1 : 1;
+      return b.total - a.total;
+    });
+  };
+
+  const groupedTransactions = getGroupedTransactions();
+
   // --- Handlers ---
   const toggleTheme = () => {
     setTheme(prev => prev === 'light' ? 'dark' : 'light');
@@ -233,6 +269,12 @@ export default function App() {
   const handleAddNewCategory = () => {
     if (!newCategoryName.trim()) return;
 
+    // Prevent duplicates
+    if (categories[newTransaction.type].includes(newCategoryName.trim())) {
+      Alert.alert('Error', 'Category already exists.');
+      return;
+    }
+
     setCategories(prev => ({
       ...prev,
       [newTransaction.type]: [...prev[newTransaction.type], newCategoryName.trim()]
@@ -241,6 +283,67 @@ export default function App() {
     setNewTransaction({ ...newTransaction, category: newCategoryName.trim() });
     setNewCategoryName('');
     setIsAddingCategory(false);
+  };
+
+  const handleDeleteCategoryInitiation = (categoryName) => {
+    const type = newTransaction.type;
+    // Check for existing transactions
+    const hasTransactions = transactions.some(t => t.category === categoryName && t.type === type);
+
+    if (hasTransactions) {
+      setCategoryToDelete({ name: categoryName, type });
+      setDeleteModalVisible(true);
+    } else {
+      Alert.alert(
+        "Delete Category",
+        `Are you sure you want to delete "${categoryName}"?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: () => executeCategoryDeletion(categoryName, type, 'delete')
+          }
+        ]
+      );
+    }
+  };
+
+  const executeCategoryDeletion = (categoryName, type, action) => {
+    let updatedTransactions = [...transactions];
+
+    if (action === 'delete') {
+      // Remove transactions with this category
+      updatedTransactions = updatedTransactions.filter(t => !(t.category === categoryName && t.type === type));
+    } else if (action === 'reassign') {
+      if (!reassignCategory) {
+        Alert.alert('Error', 'Please select a category to reassign to.');
+        return;
+      }
+      // Update transactions to new category
+      updatedTransactions = updatedTransactions.map(t => {
+        if (t.category === categoryName && t.type === type) {
+          return { ...t, category: reassignCategory };
+        }
+        return t;
+      });
+    }
+
+    setTransactions(updatedTransactions);
+
+    // Remove category from list
+    setCategories(prev => ({
+      ...prev,
+      [type]: prev[type].filter(c => c !== categoryName)
+    }));
+
+    // Reset states
+    if (newTransaction.category === categoryName) {
+      setNewTransaction(prev => ({ ...prev, category: '' }));
+    }
+    setDeleteModalVisible(false);
+    setCategoryToDelete(null);
+    setReassignCategory('');
   };
 
   const changeMonth = (direction) => {
@@ -261,30 +364,66 @@ export default function App() {
   };
 
   // --- Render Items ---
-  const renderTransactionItem = ({ item }) => (
+  const toggleCategory = (key) => {
+    setExpandedCategories(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }));
+  };
+
+  const renderTransactionItem = (item) => (
     <TouchableOpacity
+      key={item.id}
       activeOpacity={0.7}
       onLongPress={() => confirmDelete(item.id)}
+      style={[styles.subTransactionItem]}
     >
-      <View style={[styles.transactionItem, { backgroundColor: colors.card }]}>
-        <View style={styles.transactionLeft}>
-          <View style={[styles.iconPlaceholder, { backgroundColor: item.type === 'Income' ? colors.income + '20' : colors.expense + '20' }]}>
-            <Text style={{ fontSize: 20 }}>{item.type === 'Income' ? '💰' : '💸'}</Text>
-          </View>
-          <View>
-            <Text style={[styles.transactionCategory, { color: colors.text }]}>{item.category}</Text>
-            {item.note ? <Text style={[styles.transactionNote, { color: colors.subText }]}>{item.note}</Text> : null}
-          </View>
+      <View style={styles.subTransactionContent}>
+        <View style={styles.subTransactionLeft}>
+          <Text style={[styles.transactionDate, { color: colors.subText, marginRight: 8, marginTop: 0 }]}>{item.displayDate.slice(0, 5)}</Text>
+          {item.note ? <Text style={[styles.transactionNote, { color: colors.subText }]} numberOfLines={1}>- {item.note}</Text> : null}
         </View>
-        <View>
-          <Text style={[styles.transactionAmount, { color: item.type === 'Income' ? colors.income : colors.expense }]}>
-            {item.type === 'Income' ? '+' : '-'} {formatCurrency(item.amount)}
-          </Text>
-          <Text style={[styles.transactionDate, { color: colors.subText }]}>{item.displayDate}</Text>
-        </View>
+        <Text style={[styles.subTransactionAmount, { color: item.type === 'Income' ? colors.income : colors.expense }]}>
+          {formatCurrency(item.amount)}
+        </Text>
       </View>
     </TouchableOpacity>
   );
+
+  const renderCategoryBlock = ({ item }) => {
+    const isExpanded = expandedCategories[item.key];
+    return (
+      <View style={[styles.categoryBlock, { backgroundColor: colors.card }]}>
+        <TouchableOpacity
+          style={styles.categoryHeader}
+          onPress={() => toggleCategory(item.key)}
+          activeOpacity={0.7}
+        >
+          <View style={styles.categoryHeaderLeft}>
+            <View style={[styles.iconPlaceholder, { backgroundColor: item.type === 'Income' ? colors.income + '20' : colors.expense + '20' }]}>
+              <Text style={{ fontSize: 20 }}>{item.type === 'Income' ? '💰' : '💸'}</Text>
+            </View>
+            <View>
+              <Text style={[styles.categoryTitle, { color: colors.text }]}>{item.category}</Text>
+              <Text style={[styles.categoryCount, { color: colors.subText }]}>{item.transactions.length} transactions</Text>
+            </View>
+          </View>
+          <View style={styles.categoryHeaderRight}>
+            <Text style={[styles.categoryTotal, { color: item.type === 'Income' ? colors.income : colors.expense }]}>
+              {formatCurrency(item.total)}
+            </Text>
+            <Text style={[styles.expandIcon, { color: colors.subText }]}>{isExpanded ? '▲' : '▼'}</Text>
+          </View>
+        </TouchableOpacity>
+
+        {isExpanded && (
+          <View style={[styles.transactionList, { borderTopColor: colors.border }]}>
+            {item.transactions.map(t => renderTransactionItem(t))}
+          </View>
+        )}
+      </View>
+    );
+  };
 
   const renderFooter = () => (
     <View style={styles.footerContainer}>
@@ -360,9 +499,9 @@ export default function App() {
           <View style={styles.listContainer}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>Transactions</Text>
             <FlatList
-              data={filteredTransactions}
-              keyExtractor={(item) => item.id}
-              renderItem={renderTransactionItem}
+              data={groupedTransactions}
+              keyExtractor={(item) => item.key}
+              renderItem={renderCategoryBlock}
               ListEmptyComponent={
                 <View style={styles.emptyState}>
                   <Text style={[styles.emptyStateText, { color: colors.subText }]}>No transactions for this month.</Text>
@@ -470,6 +609,8 @@ export default function App() {
                     {categories[newTransaction.type].map((cat) => (
                       <TouchableOpacity
                         key={cat}
+                        onLongPress={() => handleDeleteCategoryInitiation(cat)}
+                        delayLongPress={500}
                         style={[
                           styles.categoryChip,
                           { backgroundColor: colors.background },
@@ -576,6 +717,72 @@ export default function App() {
         </>
       )
       }
+
+      {/* Delete Category Modal */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={deleteModalVisible}
+        onRequestClose={() => setDeleteModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: colors.card, minHeight: 300 }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Delete Category</Text>
+            <Text style={{ textAlign: 'center', marginBottom: 20, color: colors.text }}>
+              "{categoryToDelete?.name}" has transactions. What would you like to do?
+            </Text>
+
+            <TouchableOpacity
+              style={[styles.actionButton, { backgroundColor: colors.expense }]}
+              onPress={() => executeCategoryDeletion(categoryToDelete.name, categoryToDelete.type, 'delete')}
+            >
+              <Text style={styles.actionButtonText}>Delete All Transactions</Text>
+            </TouchableOpacity>
+
+            <Text style={{ textAlign: 'center', marginVertical: 15, color: colors.subText }}>- OR -</Text>
+
+            <Text style={[styles.label, { color: colors.subText }]}>Reassign to:</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll}>
+              {categories[categoryToDelete?.type]?.filter(c => c !== categoryToDelete?.name).map(cat => (
+                <TouchableOpacity
+                  key={cat}
+                  style={[
+                    styles.categoryChip,
+                    { backgroundColor: colors.background },
+                    reassignCategory === cat && { backgroundColor: colors.primary }
+                  ]}
+                  onPress={() => setReassignCategory(cat)}
+                >
+                  <Text style={[
+                    styles.categoryChipText,
+                    { color: colors.text },
+                    reassignCategory === cat && { color: 'white', fontWeight: 'bold' }
+                  ]}>{cat}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            <TouchableOpacity
+              style={[styles.actionButton, { backgroundColor: colors.primary, marginTop: 10, opacity: reassignCategory ? 1 : 0.5 }]}
+              disabled={!reassignCategory}
+              onPress={() => executeCategoryDeletion(categoryToDelete.name, categoryToDelete.type, 'reassign')}
+            >
+              <Text style={styles.actionButtonText}>Reassign & Delete Category</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.closeButton, { backgroundColor: colors.background, marginTop: 20 }]}
+              onPress={() => {
+                setDeleteModalVisible(false);
+                setCategoryToDelete(null);
+                setReassignCategory('');
+              }}
+            >
+              <Text style={[styles.closeButtonText, { color: colors.text }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
     </SafeAreaView >
   );
@@ -794,9 +1001,63 @@ const styles = StyleSheet.create({
   },
   label: {
     fontSize: 14,
+    paddingVertical: 10,
+  },
+  categoryBlock: {
+    borderRadius: 12,
+    marginBottom: 12,
+    overflow: 'hidden',
+  },
+  categoryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 15,
+  },
+  categoryHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  categoryTitle: {
+    fontSize: 16,
     fontWeight: '600',
-    marginBottom: 10,
-    marginTop: 10,
+  },
+  categoryCount: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  categoryHeaderRight: {
+    alignItems: 'flex-end',
+  },
+  categoryTotal: {
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  expandIcon: {
+    fontSize: 12,
+    marginTop: 4,
+  },
+  transactionList: {
+    borderTopWidth: 1,
+    paddingVertical: 5,
+  },
+  subTransactionItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+  },
+  subTransactionContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  subTransactionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  subTransactionAmount: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   input: {
     borderRadius: 10,
@@ -938,6 +1199,18 @@ const styles = StyleSheet.create({
   footerText: {
     fontSize: 12,
     textAlign: 'center',
+  },
+  actionButton: {
+    padding: 15,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginBottom: 10,
+    width: '100%',
+  },
+  actionButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
 });
 
